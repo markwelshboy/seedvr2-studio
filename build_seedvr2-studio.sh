@@ -10,6 +10,7 @@ Options:
   --no-push              Do not push (default: push)
   --load                 Load into local docker (implies --no-push)
   --platform <plats>     Default: linux/amd64
+  --builder <name>       Buildx builder (default: buildkit-scratch)
   --no-cache             Disable build cache
   --prune                Safe-ish prune before build (keeps builder cache)
   --prune-hard           Aggressive prune before build (includes builder cache)
@@ -37,6 +38,7 @@ Examples:
   ./build_seedvr2-studio.sh --target browser
   ./build_seedvr2-studio.sh --target browser --load
   ./build_seedvr2-studio.sh --all-targets
+  ./build_seedvr2-studio.sh --builder buildkit-scratch --target browser
   ./build_seedvr2-studio.sh --build-arg UPSTREAM_REF=main --target browser
 USAGE
 }
@@ -47,6 +49,7 @@ have_cmd() { command -v "$1" >/dev/null 2>&1; }
 IMAGE="markwelshboy/seedvr2-studio"
 TAG="latest"
 DOCKERFILE="Dockerfile"
+BUILDER="${BUILDER:-buildkit-scratch}"
 PUSH=true
 LOAD=false
 PLATFORM="linux/amd64"
@@ -65,6 +68,7 @@ while [[ $# -gt 0 ]]; do
     --no-push) PUSH=false; shift ;;
     --load) LOAD=true; PUSH=false; shift ;;
     --platform) [[ -n "${2:-}" ]] || die "--platform requires a value"; PLATFORM="$2"; shift 2 ;;
+    --builder) [[ -n "${2:-}" ]] || die "--builder requires a value"; BUILDER="$2"; shift 2 ;;
     --no-cache) NO_CACHE=true; shift ;;
     --prune) PRUNE=true; shift ;;
     --prune-hard) PRUNE_HARD=true; shift ;;
@@ -109,6 +113,7 @@ esac
 echo "== Build settings =="
 echo "Image       : ${IMAGE}:${TAG}"
 echo "Platform    : ${PLATFORM}"
+echo "Builder     : ${BUILDER}"
 echo "Push        : ${PUSH}"
 echo "Load        : ${LOAD}"
 echo "No-cache    : ${NO_CACHE}"
@@ -124,14 +129,20 @@ echo ""
 
 if $PRUNE_HARD; then
   sudo docker system prune -af || true
-  sudo docker builder prune -af || true
+  sudo docker buildx prune --builder "${BUILDER}" -af || true
 elif $PRUNE; then
   sudo docker container prune -f || true
   sudo docker image prune -f || true
 fi
 
-if ! sudo docker buildx inspect >/dev/null 2>&1; then
-  sudo docker buildx create --use --name default >/dev/null
+# The builder is host infrastructure: do not silently fall back to Docker's
+# local/default builder, because that puts large CUDA build layers back on the
+# system Docker data-root instead of the dedicated scratch-backed BuildKit area.
+if ! sudo docker buildx inspect "${BUILDER}" --bootstrap >/dev/null 2>&1; then
+  echo "ERROR: buildx builder '${BUILDER}' is not available." >&2
+  echo "Available builders:" >&2
+  sudo docker buildx ls >&2 || true
+  exit 1
 fi
 
 COMMON=(
@@ -149,8 +160,9 @@ build_one() {
   local target_stage="$2"
   local args=("${COMMON[@]}")
   [[ -n "${target_stage}" ]] && args+=(--target "${target_stage}")
-  echo "== Building ${image_ref}:${TAG} (target: ${target_stage:-default}) =="
+  echo "== Building ${image_ref}:${TAG} (target: ${target_stage:-default}, builder: ${BUILDER}) =="
   sudo docker buildx build \
+    --builder "${BUILDER}" \
     -t "${image_ref}:${TAG}" \
     "${args[@]}" \
     "${EXTRA_BUILD_ARGS[@]}" \
