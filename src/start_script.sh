@@ -12,11 +12,13 @@ GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head
 GPU_KEY="$(printf '%s' "${GPU_NAME:-unknown-gpu}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+|-+$//g')"
 GPU_KEY="${GPU_KEY:-unknown-gpu}"
 TRT_DATA="${STUDIO_DATA}/tensorrt-artifacts/${GPU_KEY}"
+ONNX_DATA="${STUDIO_DATA}/tensorrt-onnx"
 
 mkdir -p \
   "${STUDIO_DATA}/models/SEEDVR2" \
   "${STUDIO_DATA}/outputs" \
   "${TRT_DATA}" \
+  "${ONNX_DATA}" \
   "${STUDIO_DATA}/logs" \
   "${HF_HOME:-/workspace/.cache/huggingface}" \
   "${TORCH_HOME:-/workspace/.cache/torch}"
@@ -27,6 +29,27 @@ rm -rf "${STUDIO_ROOT}/models/SEEDVR2" "${STUDIO_ROOT}/outputs" "${STUDIO_ROOT}/
 ln -s "${STUDIO_DATA}/models/SEEDVR2" "${STUDIO_ROOT}/models/SEEDVR2"
 ln -s "${STUDIO_DATA}/outputs" "${STUDIO_ROOT}/outputs"
 ln -s "${TRT_DATA}" "${STUDIO_ROOT}/tensorrt_backend/artifacts"
+
+# ONNX graphs are portable across GPUs; TensorRT plans are not. Keep the ONNX
+# files in a shared cache and expose them inside each GPU-specific artifacts
+# directory as symlinks. If an older image already created a real ONNX file in
+# the GPU-specific directory, migrate it into the shared cache first.
+for stem in \
+  vae_encoder_5f_tile512 \
+  vae_encoder_21f_tile512 \
+  vae_decoder_tile_512_5f \
+  vae_decoder_tile_256_21f; do
+  local_onnx="${TRT_DATA}/${stem}.onnx"
+  shared_onnx="${ONNX_DATA}/${stem}.onnx"
+  if [[ -f "${local_onnx}" && ! -L "${local_onnx}" ]]; then
+    if [[ ! -e "${shared_onnx}" ]]; then
+      mv "${local_onnx}" "${shared_onnx}"
+    else
+      rm -f "${local_onnx}"
+    fi
+  fi
+  ln -sfn "${shared_onnx}" "${local_onnx}"
+done
 
 # RunPod commonly supplies PUBLIC_KEY. SSH is only a recovery path.
 mkdir -p /root/.ssh /run/sshd
@@ -47,6 +70,7 @@ echo "Data      : ${STUDIO_DATA}"
 echo "Models    : ${STUDIO_DATA}/models/SEEDVR2"
 echo "Outputs   : ${STUDIO_DATA}/outputs"
 echo "GPU       : ${GPU_NAME:-unknown}"
+echo "ONNX cache: ${ONNX_DATA}"
 echo "TRT cache : ${TRT_DATA}"
 echo "Browser   : ${ENABLE_BROWSER}"
 echo "Venv      : ${VENV}"
