@@ -18,7 +18,7 @@ The browser target exposes:
 
 ## Build
 
-The build wrapper follows the same `docker buildx` flow as the other inference repositories.
+The build wrapper uses the dedicated `buildkit-scratch` Buildx builder by default, matching the other inference repositories.
 
 ```bash
 bash ./build_seedvr2-studio.sh --target browser
@@ -63,22 +63,75 @@ Mutable state is placed beneath:
 /workspace/seedvr2-studio/
 ├── models/SEEDVR2/
 ├── outputs/
+├── tensorrt-onnx/              # portable, shared across GPU types
 ├── tensorrt-artifacts/
-│   └── <gpu-name>/
+│   └── <gpu-name>/             # GPU/runtime-specific .rtxplan files
 └── logs/
 ```
 
 The image symlinks those paths into the upstream application at startup. Hugging Face and Torch caches are also rooted beneath `/workspace/.cache`.
 
+## Portable ONNX artifacts
+
+The fixed-shape TensorRT ONNX graphs are expensive to trace and the 21-frame encoder export exceeds a 48 GB-class GPU. A canonical set was generated on a 96 GB RTX PRO 6000 Blackwell and is stored in a private Hugging Face dataset.
+
+By default the image uses:
+
+```text
+HF_ONNX_REPO=markwelshboyx/seedvr2-studio-onnx
+HF_ONNX_REPO_TYPE=dataset
+HF_ONNX_REVISION=main
+HF_ONNX_ALLOW_EXPORT=false
+```
+
+These values can be overridden in the RunPod template. Authentication is taken from the first available token variable:
+
+```text
+HF_ONNX_TOKEN
+HF_TOKEN
+HUGGING_FACE_HUB_TOKEN
+```
+
+Recommended RunPod template variables are therefore:
+
+```text
+HF_TOKEN=<private-repo read token>
+HF_ONNX_REPO=markwelshboyx/seedvr2-studio-onnx
+HF_ONNX_REPO_TYPE=dataset
+HF_ONNX_REVISION=main
+```
+
+`prepare-tensorrt` downloads `SHA256SUMS`, verifies all four ONNX files byte-for-byte, and stores them under `/workspace/seedvr2-studio/tensorrt-onnx/`. Existing verified files are reused.
+
+If the configured private repo cannot be downloaded or verification fails, preparation stops rather than silently starting the high-memory local ONNX trace. To intentionally regenerate missing ONNX files using upstream's exporter, explicitly set:
+
+```text
+HF_ONNX_ALLOW_EXPORT=true
+```
+
+Setting `HF_ONNX_REPO` to an empty value also disables the remote source, but local export still requires `HF_ONNX_ALLOW_EXPORT=true`.
+
 ## TensorRT preparation
 
-TensorRT RTX plans are GPU-specific, so they are **not** built into the Docker image. Once the pod is running on its final GPU, run:
+ONNX graphs are portable; TensorRT RTX plans are GPU/runtime-specific. Once the pod is running on its final GPU, run:
 
 ```bash
 prepare-tensorrt
 ```
 
-That downloads/validates the upstream default model and VAE, then builds the four upstream TensorRT VAE profiles into a persistent GPU-name-specific directory beneath `tensorrt-artifacts/`.
+The command:
+
+1. fetches and verifies the four portable ONNX artifacts from the configured Hugging Face repo;
+2. links those portable graphs into the current GPU's artifact directory;
+3. downloads/validates the default SeedVR2 model and VAE;
+4. invokes upstream TensorRT preparation, which sees the ONNX graphs already present and therefore skips tracing;
+5. builds only missing `.rtxplan` files for the current GPU/runtime.
+
+Plans are persisted beneath:
+
+```text
+/workspace/seedvr2-studio/tensorrt-artifacts/<gpu-name>/
+```
 
 To inspect the CUDA/PyTorch/SageAttention/TensorRT stack:
 
