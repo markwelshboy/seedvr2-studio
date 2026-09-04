@@ -22,6 +22,10 @@ def env(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+def truthy(value: str) -> bool:
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -41,8 +45,21 @@ def parse_checksums(path: Path) -> dict[str, str]:
             continue
         digest, filename = parts
         filename = filename.lstrip("*")
+        # Accept both portable basename entries and the absolute paths used by
+        # the first canonical upload; only the basename matters locally.
         checksums[Path(filename).name] = digest.lower()
     return checksums
+
+
+def parse_manifest(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip()
+    return values
 
 
 def download(
@@ -67,6 +84,8 @@ def main() -> int:
     revision = env("HF_ONNX_REVISION", "main")
     local_dir = Path(env("ONNX_DATA", "/workspace/seedvr2-studio/tensorrt-onnx"))
     token = env("HF_ONNX_TOKEN") or env("HF_TOKEN") or env("HUGGING_FACE_HUB_TOKEN") or None
+    expected_upstream = env("STUDIO_UPSTREAM_REF")
+    allow_mismatch = truthy(env("HF_ONNX_ALLOW_MISMATCH", "false"))
 
     if not repo_id:
         print("HF_ONNX_REPO is empty; portable ONNX download disabled.")
@@ -77,6 +96,7 @@ def main() -> int:
     print(f"Repo type          : {repo_type}")
     print(f"Revision           : {revision}")
     print(f"Local cache        : {local_dir}")
+    print(f"Expected upstream  : {expected_upstream or '<not pinned>'}")
     print(f"Authentication     : {'token available' if token else 'no token found'}")
 
     try:
@@ -94,14 +114,42 @@ def main() -> int:
         print("ERROR: SHA256SUMS is missing expected files: " + ", ".join(missing_hashes), file=sys.stderr)
         return 1
 
-    # Manifest is useful provenance but is not required to build engines.
+    manifest_path: Path | None = None
     try:
-        download(
+        manifest_path = download(
             repo_id=repo_id, repo_type=repo_type, revision=revision, token=token,
             filename="manifest.txt", local_dir=local_dir,
         )
     except Exception as exc:
+        if expected_upstream and not allow_mismatch:
+            print(
+                f"ERROR: manifest.txt is required to validate upstream compatibility: {exc}",
+                file=sys.stderr,
+            )
+            return 1
         print(f"[warn] manifest.txt could not be fetched: {exc}")
+
+    if manifest_path is not None:
+        manifest = parse_manifest(manifest_path)
+        artifact_upstream = manifest.get("upstream_ref", "")
+        if expected_upstream:
+            if not artifact_upstream:
+                if not allow_mismatch:
+                    print("ERROR: manifest.txt has no upstream_ref entry", file=sys.stderr)
+                    return 1
+                print("[warn] manifest.txt has no upstream_ref entry; mismatch override enabled")
+            elif artifact_upstream != expected_upstream:
+                message = (
+                    "Portable ONNX upstream mismatch: "
+                    f"image={expected_upstream}, artifacts={artifact_upstream}"
+                )
+                if not allow_mismatch:
+                    print(f"ERROR: {message}", file=sys.stderr)
+                    print("ERROR: Set HF_ONNX_ALLOW_MISMATCH=true only if this is intentional.", file=sys.stderr)
+                    return 1
+                print(f"[warn] {message}; mismatch override enabled")
+            else:
+                print(f"[ok] manifest upstream_ref matches image ({artifact_upstream})")
 
     for name in EXPECTED:
         expected = checksums[name]
