@@ -82,6 +82,7 @@ HF_ONNX_REPO=markwelshboyx/seedvr2-studio-onnx
 HF_ONNX_REPO_TYPE=dataset
 HF_ONNX_REVISION=main
 HF_ONNX_ALLOW_EXPORT=false
+HF_ONNX_ALLOW_MISMATCH=false
 ```
 
 These values can be overridden in the RunPod template. Authentication is taken from the first available token variable:
@@ -101,15 +102,23 @@ HF_ONNX_REPO_TYPE=dataset
 HF_ONNX_REVISION=main
 ```
 
-`prepare-tensorrt` downloads `SHA256SUMS`, verifies all four ONNX files byte-for-byte, and stores them under `/workspace/seedvr2-studio/tensorrt-onnx/`. Existing verified files are reused.
+`prepare-tensorrt` downloads `SHA256SUMS`, verifies all four ONNX files byte-for-byte, checks `manifest.txt` against the upstream commit baked into the image, and stores the portable graphs under `/workspace/seedvr2-studio/tensorrt-onnx/`. Existing verified files are reused. The checksum parser accepts both basename entries and the absolute-path entries used by the first canonical upload.
 
-If the configured private repo cannot be downloaded or verification fails, preparation stops rather than silently starting the high-memory local ONNX trace. To intentionally regenerate missing ONNX files using upstream's exporter, explicitly set:
+If the configured private repo cannot be downloaded, checksum validation fails, or the manifest belongs to a different upstream revision, preparation stops rather than silently starting the high-memory local ONNX trace.
+
+To intentionally regenerate missing ONNX files using upstream's exporter, explicitly set:
 
 ```text
 HF_ONNX_ALLOW_EXPORT=true
 ```
 
-Setting `HF_ONNX_REPO` to an empty value also disables the remote source, but local export still requires `HF_ONNX_ALLOW_EXPORT=true`.
+To intentionally consume an ONNX set whose manifest does not match the image's pinned upstream revision, explicitly set:
+
+```text
+HF_ONNX_ALLOW_MISMATCH=true
+```
+
+The mismatch override should only be used when compatibility is known. Setting `HF_ONNX_REPO` to an empty value disables the remote source, but local export still requires `HF_ONNX_ALLOW_EXPORT=true`.
 
 ## TensorRT preparation
 
@@ -122,10 +131,11 @@ prepare-tensorrt
 The command:
 
 1. fetches and verifies the four portable ONNX artifacts from the configured Hugging Face repo;
-2. links those portable graphs into the current GPU's artifact directory;
-3. downloads/validates the default SeedVR2 model and VAE;
-4. invokes upstream TensorRT preparation, which sees the ONNX graphs already present and therefore skips tracing;
-5. builds only missing `.rtxplan` files for the current GPU/runtime.
+2. validates the ONNX manifest against the image's pinned upstream revision;
+3. links those portable graphs into the current GPU's artifact directory;
+4. downloads/validates the default SeedVR2 model and VAE;
+5. invokes upstream TensorRT preparation, which sees the ONNX graphs already present and therefore skips tracing;
+6. builds only missing `.rtxplan` files for the current GPU/runtime.
 
 Plans are persisted beneath:
 
