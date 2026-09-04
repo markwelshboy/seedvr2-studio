@@ -33,7 +33,11 @@ ENV DEBIAN_FRONTEND=noninteractive \
     STUDIO_DATA=/workspace/seedvr2-studio \
     HF_HOME=/workspace/.cache/huggingface \
     TORCH_HOME=/workspace/.cache/torch \
-    XDG_CACHE_HOME=/workspace/.cache
+    XDG_CACHE_HOME=/workspace/.cache \
+    HF_ONNX_REPO=markwelshboyx/seedvr2-studio-onnx \
+    HF_ONNX_REPO_TYPE=dataset \
+    HF_ONNX_REVISION=main \
+    HF_ONNX_ALLOW_EXPORT=false
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
@@ -94,9 +98,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       --index-url https://pypi.org/simple
 
 COPY src/start_script.sh /start_script.sh
+COPY src/fetch-onnx.py /usr/local/bin/fetch-onnx
 COPY src/prepare-tensorrt.sh /usr/local/bin/prepare-tensorrt
 COPY src/verify-studio.sh /usr/local/bin/verify-studio
-RUN chmod +x /start_script.sh /usr/local/bin/prepare-tensorrt /usr/local/bin/verify-studio
+RUN chmod +x /start_script.sh /usr/local/bin/fetch-onnx /usr/local/bin/prepare-tensorrt /usr/local/bin/verify-studio
 
 # Direct web/API target.
 FROM runtime-base AS final
