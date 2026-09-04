@@ -31,13 +31,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
     VENV=/opt/venv \
     STUDIO_ROOT=/opt/seedvr-studio \
     STUDIO_DATA=/workspace/seedvr2-studio \
+    STUDIO_UPSTREAM_REF=${UPSTREAM_REF} \
     HF_HOME=/workspace/.cache/huggingface \
     TORCH_HOME=/workspace/.cache/torch \
     XDG_CACHE_HOME=/workspace/.cache \
     HF_ONNX_REPO=markwelshboyx/seedvr2-studio-onnx \
     HF_ONNX_REPO_TYPE=dataset \
     HF_ONNX_REVISION=main \
-    HF_ONNX_ALLOW_EXPORT=false
+    HF_ONNX_ALLOW_EXPORT=false \
+    HF_ONNX_ALLOW_MISMATCH=false
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
