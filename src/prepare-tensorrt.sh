@@ -32,10 +32,14 @@ if [[ -L "${ARTIFACTS_DIR}" ]]; then
     ln -s "${TRT_DATA}" "${ARTIFACTS_DIR}"
   fi
 elif [[ -e "${ARTIFACTS_DIR}" ]]; then
-  # Preserve any existing plans before replacing an old real directory.
+  # Migrate old real artifact directories before replacing them with the
+  # GPU-specific symlink used by this wrapper.
   shopt -s nullglob
   for file in "${ARTIFACTS_DIR}"/*.rtxplan; do
     [[ -e "${TRT_DATA}/$(basename "${file}")" ]] || mv "${file}" "${TRT_DATA}/"
+  done
+  for file in "${ARTIFACTS_DIR}"/*.onnx; do
+    [[ -e "${ONNX_DATA}/$(basename "${file}")" ]] || mv "${file}" "${ONNX_DATA}/"
   done
   shopt -u nullglob
   rm -rf "${ARTIFACTS_DIR}"
@@ -52,11 +56,11 @@ cd "${STUDIO_ROOT}"
 echo "============================================================"
 echo " SeedVR2 TensorRT preparation"
 echo "============================================================"
-echo "GPU       : ${GPU_NAME:-unknown}"
-echo "ONNX cache: ${ONNX_DATA}"
-echo "TRT cache : ${TRT_DATA}"
-echo "HF repo   : ${HF_ONNX_REPO:-<disabled>}"
-echo "HF type   : ${HF_ONNX_REPO_TYPE}"
+echo "GPU        : ${GPU_NAME:-unknown}"
+echo "ONNX cache : ${ONNX_DATA}"
+echo "TRT cache  : ${TRT_DATA}"
+echo "HF repo    : ${HF_ONNX_REPO:-<disabled>}"
+echo "HF type    : ${HF_ONNX_REPO_TYPE}"
 echo "HF revision: ${HF_ONNX_REVISION}"
 echo ""
 nvidia-smi --query-gpu=name,uuid,driver_version,memory.total --format=csv,noheader || true
@@ -85,8 +89,9 @@ else
   fi
 fi
 
-# The upstream preparation script expects ONNX beside the GPU-specific plans.
-# Keep only symlinks there; the real portable files live in ONNX_DATA.
+# Upstream expects ONNX beside the GPU-specific plans. Always create symlinks,
+# even when their targets are currently missing: if local export is explicitly
+# allowed, the exporter will then create the real file in the portable cache.
 for stem in \
   vae_encoder_5f_tile512 \
   vae_encoder_21f_tile512 \
@@ -94,9 +99,7 @@ for stem in \
   vae_decoder_tile_256_21f; do
   shared="${ONNX_DATA}/${stem}.onnx"
   local_path="${TRT_DATA}/${stem}.onnx"
-  if [[ -e "${shared}" ]]; then
-    ln -sfn "${shared}" "${local_path}"
-  fi
+  ln -sfn "${shared}" "${local_path}"
 done
 
 # If we deliberately allowed local export and one or more ONNX files are still
@@ -110,7 +113,7 @@ for stem in \
   [[ -e "${TRT_DATA}/${stem}.onnx" ]] || missing_onnx=true
 done
 
-if ${missing_onnx}; then
+if [[ "${missing_onnx}" == "true" ]]; then
   TOTAL_MIB="$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits 2>/dev/null | head -n1 | tr -d ' ' || true)"
   echo ""
   echo "[warn] One or more portable ONNX files are missing; upstream will export them locally."
