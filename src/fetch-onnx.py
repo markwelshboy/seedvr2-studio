@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -62,6 +63,18 @@ def parse_manifest(path: Path) -> dict[str, str]:
     return values
 
 
+def checked_out_upstream_ref(studio_root: Path) -> str:
+    """Return the actual upstream commit in the image, independent of env vars."""
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(studio_root), "rev-parse", "HEAD"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+
+
 def download(
     *, repo_id: str, repo_type: str, revision: str, token: str | None,
     filename: str, local_dir: Path, force: bool = False,
@@ -83,20 +96,45 @@ def main() -> int:
     repo_type = env("HF_ONNX_REPO_TYPE", "dataset")
     revision = env("HF_ONNX_REVISION", "main")
     local_dir = Path(env("ONNX_DATA", "/workspace/seedvr2-studio/tensorrt-onnx"))
+    studio_root = Path(env("STUDIO_ROOT", "/opt/seedvr-studio"))
     token = env("HF_ONNX_TOKEN") or env("HF_TOKEN") or env("HUGGING_FACE_HUB_TOKEN") or None
-    expected_upstream = env("STUDIO_UPSTREAM_REF")
+    configured_upstream = env("STUDIO_UPSTREAM_REF")
+    actual_upstream = checked_out_upstream_ref(studio_root)
     allow_mismatch = truthy(env("HF_ONNX_ALLOW_MISMATCH", "false"))
 
     if not repo_id:
         print("HF_ONNX_REPO is empty; portable ONNX download disabled.")
         return 2
 
+    if configured_upstream and actual_upstream and configured_upstream != actual_upstream:
+        message = (
+            "Image upstream metadata disagrees with the checked-out repository: "
+            f"STUDIO_UPSTREAM_REF={configured_upstream}, git={actual_upstream}"
+        )
+        if not allow_mismatch:
+            print(f"ERROR: {message}", file=sys.stderr)
+            print("ERROR: Set HF_ONNX_ALLOW_MISMATCH=true only if this is intentional.", file=sys.stderr)
+            return 1
+        print(f"[warn] {message}; mismatch override enabled")
+
+    expected_upstream = actual_upstream or configured_upstream
+    if not expected_upstream and not allow_mismatch:
+        print(
+            f"ERROR: could not determine the upstream commit from {studio_root} or STUDIO_UPSTREAM_REF.",
+            file=sys.stderr,
+        )
+        print("ERROR: Refusing unversioned portable ONNX artifacts.", file=sys.stderr)
+        print("ERROR: Set HF_ONNX_ALLOW_MISMATCH=true only if this is intentional.", file=sys.stderr)
+        return 1
+
+    upstream_source = "git checkout" if actual_upstream else "image metadata"
+
     local_dir.mkdir(parents=True, exist_ok=True)
     print(f"Portable ONNX repo : {repo_id}")
     print(f"Repo type          : {repo_type}")
     print(f"Revision           : {revision}")
     print(f"Local cache        : {local_dir}")
-    print(f"Expected upstream  : {expected_upstream or '<not pinned>'}")
+    print(f"Expected upstream  : {expected_upstream or '<override enabled>'} ({upstream_source})")
     print(f"Authentication     : {'token available' if token else 'no token found'}")
 
     try:
